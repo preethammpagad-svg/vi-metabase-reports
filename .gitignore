@@ -1,0 +1,16 @@
+
+# python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# env files, venv
+env_metabase.sh
+metabase_export.log
+venv/
+myenv/
+node_modules/
+
+# macOS stuff
+.DS_Store
