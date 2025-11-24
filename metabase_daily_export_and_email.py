@@ -1,16 +1,16 @@
-#!/usr/bin/env python3
 import os
 import requests
+import csv
+import shutil
 import tempfile
-import zipfile
+import datetime
 import smtplib
-import ssl
 from email.message import EmailMessage
-from datetime import datetime
-import re
 
-# ---------- Environment ----------
-METABASE_SITE = os.getenv("METABASE_SITE", "https://metabase.skit.ai").rstrip("/")
+# -----------------------------
+# ENVIRONMENT VARIABLES
+# -----------------------------
+METABASE_SITE = os.getenv("METABASE_SITE")
 METABASE_API_KEY = os.getenv("METABASE_API_KEY")
 
 SMTP_HOST = os.getenv("SMTP_HOST")
@@ -20,124 +20,98 @@ SMTP_PASS = os.getenv("SMTP_PASS")
 FROM_EMAIL = os.getenv("FROM_EMAIL")
 TO_EMAIL = os.getenv("TO_EMAIL")
 
-CARD_IDS = [8266, 8267]
-CARD_PARAMS = {}
-VERIFY_SSL = True
+# List of cards to export
+CARDS = [
+    ("VI Postpaid: Immediate Callback (D-1)", 1234),   # Replace IDs
+    ("VI Postpaid: Disposition History (D-1)", 5678),  # Replace IDs
+]
 
-# ---------- Helpers ----------
-def clean_filename(name):
-    """Sanitize card name so it can be used as a filename."""
-    return re.sub(r'[^A-Za-z0-9]+', '_', name).strip('_')
 
-def make_session():
-    if not METABASE_API_KEY:
-        raise RuntimeError("METABASE_API_KEY is required.")
-    s = requests.Session()
-    s.headers.update({"x-api-key": METABASE_API_KEY})
-    return s
-
-def get_card_name(session, card_id):
-    """Fetch card metadata to get human-readable name."""
-    url = f"{METABASE_SITE}/api/card/{card_id}"
-    r = session.get(url, verify=VERIFY_SSL, timeout=30)
-    r.raise_for_status()
-    data = r.json()
-    return data.get("name", f"Card_{card_id}")
-
-def build_params(params_dict):
-    params = []
-    for k, v in (params_dict or {}).items():
-        params.append({
-            "type": "category",
-            "target": ["variable", "template-tag", k],
-            "value": v
-        })
-    return params
-
-def download_card_csv(session, card_id, out_path, params=None):
+# -----------------------------
+# METABASE EXPORT FUNCTION
+# -----------------------------
+def download_csv(card_id, name, output_dir):
     url = f"{METABASE_SITE}/api/card/{card_id}/query/csv"
-    payload = {}
-    if params:
-        payload["parameters"] = build_params(params)
-    r = session.post(url, json=payload, verify=VERIFY_SSL, timeout=60)
-    r.raise_for_status()
-    with open(out_path, "wb") as f:
-        f.write(r.content)
 
-def make_zip(files, zip_path):
-    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as z:
-        for p in files:
-            z.write(p, arcname=os.path.basename(p))
+    headers = {"X-Metabase-Session": METABASE_API_KEY}
 
+    response = requests.post(url, headers=headers)
+
+    if response.status_code != 200:
+        raise Exception(f"Failed to export {name}: {response.text}")
+
+    safe_name = name.replace(" ", "_").replace("(", "").replace(")", "").replace("-", "_")
+    filename = f"{safe_name}.csv"
+    file_path = os.path.join(output_dir, filename)
+
+    with open(file_path, "wb") as f:
+        f.write(response.content)
+
+    print(f"Downloaded: {name} → {file_path}")
+    return file_path
+
+
+# -----------------------------
+# SEND EMAIL
+# -----------------------------
 def send_email(zip_path):
-    subject = "VI Daily Reports (D-1)"
-    body = (
-        "Hi Team,\n\n"
-        "Please find Immediate Callback Report & Disposition History Report "
-        "for yesterday's campaigns attached below.\n\n"
-        "Thank You"
-    )
-
     msg = EmailMessage()
-    msg["Subject"] = subject
+    msg["Subject"] = "VI Daily Reports"
     msg["From"] = FROM_EMAIL
     msg["To"] = TO_EMAIL
-    msg.set_content(body)
+    msg.set_content("Please find attached the VI daily reports.")
 
+    # attach zip
     with open(zip_path, "rb") as f:
-        data = f.read()
+        msg.add_attachment(
+            f.read(),
+            maintype="application",
+            subtype="zip",
+            filename=os.path.basename(zip_path),
+        )
 
-    msg.add_attachment(
-        data,
-        maintype="application",
-        subtype="zip",
-        filename=os.path.basename(zip_path)
-    )
-
-    context = ssl.create_default_context()
     with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as smtp:
-        smtp.starttls(context=context)
+        smtp.starttls()
         smtp.login(SMTP_USER, SMTP_PASS)
         smtp.send_message(msg)
 
-
-# ---------- Main ----------
-def main():
-    session = make_session()
-    tmpdir = tempfile.mkdtemp(prefix="metabase_export_")
-    csv_paths = []
-
-    try:
-        for cid in CARD_IDS:
-            # Fetch card name
-            card_name = get_card_name(session, cid)
-            clean_name = clean_filename(card_name)
-            csv_path = os.path.join(tmpdir, f"{clean_name}.csv")
-
-            print(f"Downloading: {card_name} → {csv_path}")
-
-            params = CARD_PARAMS.get(str(cid)) or CARD_PARAMS.get(cid) or None
-            download_card_csv(session, cid, csv_path, params=params)
-            csv_paths.append(csv_path)
-
-        # Create final zip
-        zip_path = os.path.join(
-            tmpdir,
-            f"VI_Daily_Reports_{datetime.now().strftime('%Y%m%d')}.zip"
-        )
-        make_zip(csv_paths, zip_path)
-
-        print("Sending email...")
-        send_email(zip_path)
-        print("Email sent!")
-
-    finally:
-        for f in csv_paths:
-            try: os.remove(f)
-            except: pass
-        try: os.remove(zip_path)
-        except: pass
+    print("Email sent!")
 
 
+# -----------------------------
+# MAIN EXECUTION
+# -----------------------------
 if __name__ == "__main__":
-    main()
+    # Create a temporary directory to store CSV files
+    tmp_dir = tempfile.mkdtemp(prefix="metabase_export_")
+    print("Temp directory:", tmp_dir)
+
+    # Download all reports
+    csv_files = []
+    for name, card_id in CARDS:
+        csv_path = download_csv(card_id, name, tmp_dir)
+        csv_files.append(csv_path)
+
+    # -----------------------------
+    # CREATE ZIP IN WORKSPACE (IMPORTANT)
+    # -----------------------------
+    today = datetime.datetime.utcnow().strftime("%Y%m%d")
+
+    # Zip file name and final output in GitHub runner's workspace
+    zip_name = f"VI_Daily_Reports_{today}"
+    zip_path = os.path.abspath(f"{zip_name}.zip")
+
+    shutil.make_archive(zip_name, "zip", tmp_dir)
+
+    print("ZIP created:", zip_path)
+
+    # -----------------------------
+    # SEND EMAIL WITH ZIP
+    # -----------------------------
+    print("Sending email...")
+    send_email(zip_path)
+
+    # Cleanup temp dir
+    shutil.rmtree(tmp_dir)
+
+    print("Done!")
