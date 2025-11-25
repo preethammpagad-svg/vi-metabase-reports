@@ -41,8 +41,7 @@ def get_card_name(session, card_id):
     url = f"{METABASE_SITE}/api/card/{card_id}"
     r = session.get(url, verify=VERIFY_SSL, timeout=30)
     r.raise_for_status()
-    data = r.json()
-    return data.get("name", f"Card_{card_id}")
+    return r.json().get("name", f"Card_{card_id}")
 
 def build_params(params_dict):
     params = []
@@ -54,8 +53,9 @@ def build_params(params_dict):
         })
     return params
 
-def download_card_csv(session, card_id, out_path, params=None):
-    url = f"{METABASE_SITE}/api/card/{card_id}/query/csv"
+def download_card_xlsx(session, card_id, out_path, params=None):
+    """Download card results as XLSX."""
+    url = f"{METABASE_SITE}/api/card/{card_id}/query/xlsx"
     payload = {}
     if params:
         payload["parameters"] = build_params(params)
@@ -100,44 +100,41 @@ def send_email(zip_path):
         smtp.login(SMTP_USER, SMTP_PASS)
         smtp.send_message(msg)
 
-
 # ---------- Main ----------
 def main():
     session = make_session()
     tmpdir = tempfile.mkdtemp(prefix="metabase_export_")
-    csv_paths = []
+    xlsx_paths = []
 
     try:
         for cid in CARD_IDS:
-            # Fetch card name
             card_name = get_card_name(session, cid)
             clean_name = clean_filename(card_name)
-            csv_path = os.path.join(tmpdir, f"{clean_name}.csv")
+            xlsx_path = os.path.join(tmpdir, f"{clean_name}.xlsx")
 
-            print(f"Downloading: {card_name} → {csv_path}")
+            print(f"Downloading (XLSX): {card_name} → {xlsx_path}")
 
             params = CARD_PARAMS.get(str(cid)) or CARD_PARAMS.get(cid) or None
-            download_card_csv(session, cid, csv_path, params=params)
-            csv_paths.append(csv_path)
+            download_card_xlsx(session, cid, xlsx_path, params=params)
+            xlsx_paths.append(xlsx_path)
 
         # Create final zip
         zip_path = os.path.join(
             tmpdir,
             f"VI_Daily_Reports_{datetime.now().strftime('%Y%m%d')}.zip"
         )
-        make_zip(csv_paths, zip_path)
+        make_zip(xlsx_paths, zip_path)
 
         print("Sending email...")
         send_email(zip_path)
         print("Email sent!")
 
     finally:
-        for f in csv_paths:
+        for f in xlsx_paths:
             try: os.remove(f)
             except: pass
         try: os.remove(zip_path)
         except: pass
-
 
 if __name__ == "__main__":
     main()
