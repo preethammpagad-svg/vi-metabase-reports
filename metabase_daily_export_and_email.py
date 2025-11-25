@@ -8,8 +8,6 @@ import ssl
 from email.message import EmailMessage
 from datetime import datetime
 import re
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
 
 # ---------- Environment ----------
 METABASE_SITE = os.getenv("METABASE_SITE", "https://metabase.skit.ai").rstrip("/")
@@ -43,7 +41,8 @@ def get_card_name(session, card_id):
     url = f"{METABASE_SITE}/api/card/{card_id}"
     r = session.get(url, verify=VERIFY_SSL, timeout=30)
     r.raise_for_status()
-    return r.json().get("name", f"Card_{card_id}")
+    data = r.json()
+    return data.get("name", f"Card_{card_id}")
 
 def build_params(params_dict):
     params = []
@@ -55,46 +54,15 @@ def build_params(params_dict):
         })
     return params
 
-def _make_retry_session(retries=3, backoff_factor=1, status_forcelist=(500,502,503,504)):
-    s = requests.Session()
-    retry = Retry(
-        total=retries,
-        read=retries,
-        connect=retries,
-        backoff_factor=backoff_factor,
-        status_forcelist=status_forcelist,
-        allowed_methods=frozenset(['GET','POST','PUT','DELETE','HEAD','OPTIONS'])
-    )
-    adapter = HTTPAdapter(max_retries=retry)
-    s.mount("https://", adapter)
-    s.mount("http://", adapter)
-    # ensure x-api-key header preserved if set on outer session
-    return s
-
-def download_card_xlsx(session, card_id, out_path, params=None, read_timeout=300):
-    """
-    Download card results as XLSX using streaming and retries.
-    - session: requests.Session that carries x-api-key header (we'll reuse headers).
-    - out_path: local file path to write.
-    - read_timeout: seconds allowed for read; default 300 (5 minutes).
-    """
-    url = f"{METABASE_SITE}/api/card/{card_id}/query/xlsx"
+def download_card_csv(session, card_id, out_path, params=None):
+    url = f"{METABASE_SITE}/api/card/{card_id}/query/csv"
     payload = {}
     if params:
         payload["parameters"] = build_params(params)
-
-    # use a local session that shares headers from the provided session
-    s = _make_retry_session(retries=3, backoff_factor=1)
-    s.headers.update(session.headers)
-
-    # stream the response to avoid timeouts while building content in memory
-    with s.post(url, json=payload, verify=VERIFY_SSL, stream=True, timeout=(10, read_timeout)) as r:
-        r.raise_for_status()
-        # write in chunks
-        with open(out_path, "wb") as f:
-            for chunk in r.iter_content(chunk_size=8192):
-                if chunk:
-                    f.write(chunk)
+    r = session.post(url, json=payload, verify=VERIFY_SSL, timeout=60)
+    r.raise_for_status()
+    with open(out_path, "wb") as f:
+        f.write(r.content)
 
 def make_zip(files, zip_path):
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as z:
@@ -132,41 +100,44 @@ def send_email(zip_path):
         smtp.login(SMTP_USER, SMTP_PASS)
         smtp.send_message(msg)
 
+
 # ---------- Main ----------
 def main():
     session = make_session()
     tmpdir = tempfile.mkdtemp(prefix="metabase_export_")
-    xlsx_paths = []
+    csv_paths = []
 
     try:
         for cid in CARD_IDS:
+            # Fetch card name
             card_name = get_card_name(session, cid)
             clean_name = clean_filename(card_name)
-            xlsx_path = os.path.join(tmpdir, f"{clean_name}.xlsx")
+            csv_path = os.path.join(tmpdir, f"{clean_name}.csv")
 
-            print(f"Downloading (XLSX): {card_name} → {xlsx_path}")
+            print(f"Downloading: {card_name} → {csv_path}")
 
             params = CARD_PARAMS.get(str(cid)) or CARD_PARAMS.get(cid) or None
-            download_card_xlsx(session, cid, xlsx_path, params=params)
-            xlsx_paths.append(xlsx_path)
+            download_card_csv(session, cid, csv_path, params=params)
+            csv_paths.append(csv_path)
 
         # Create final zip
         zip_path = os.path.join(
             tmpdir,
             f"VI_Daily_Reports_{datetime.now().strftime('%Y%m%d')}.zip"
         )
-        make_zip(xlsx_paths, zip_path)
+        make_zip(csv_paths, zip_path)
 
         print("Sending email...")
         send_email(zip_path)
         print("Email sent!")
 
     finally:
-        for f in xlsx_paths:
+        for f in csv_paths:
             try: os.remove(f)
             except: pass
         try: os.remove(zip_path)
         except: pass
+
 
 if __name__ == "__main__":
     main()
