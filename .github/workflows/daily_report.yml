@@ -28,22 +28,18 @@ jobs:
 
       - name: Show runner times (verify schedule)
         run: |
-          echo "=== Runner time (local) ==="
+          echo "=== Runner local time ==="
           date
           echo "=== UTC time ==="
           date -u
           echo "=== IST time (calculated) ==="
-          # Print IST using python for portability
           python - <<'PY'
-import datetime, pytz, os
-utc = datetime.datetime.now(datetime.timezone.utc)
-ist = utc.astimezone(datetime.timezone(datetime.timedelta(hours=5, minutes=30)))
+from datetime import datetime, timezone, timedelta
+utc = datetime.now(timezone.utc)
+ist = utc.astimezone(timezone(timedelta(hours=5, minutes=30)))
 print("UTC:", utc.strftime("%Y-%m-%d %H:%M:%S %Z"))
 print("IST:", ist.strftime("%Y-%m-%d %H:%M:%S %Z"))
 PY
-        # Note: the pytz module is not required; using stdlib timezone arithmetic above.
-        # If the above python snippet errors due to missing tzinfo support on older python versions,
-        # the shell fallback below will still print date/time:
         shell: bash
 
       - name: Set up Python
@@ -62,12 +58,11 @@ PY
           which python
           python -c "import requests; print('requests', requests.__version__)"
           echo "Working directory: $(pwd)"
-      
+
       - name: Run metabase export script (unbuffered logs)
-        # Use -u so that Python prints logs immediately to the Actions log
-        run: python -u metabase_daily_export_and_email.py
+        run: |
+          python -u metabase_daily_export_and_email.py
         env:
-          # re-export secrets so script can access them (already set at job env, this is optional)
           METABASE_SITE: ${{ secrets.METABASE_SITE }}
           METABASE_API_KEY: ${{ secrets.METABASE_API_KEY }}
           SMTP_HOST: ${{ secrets.SMTP_HOST }}
@@ -77,14 +72,29 @@ PY
           FROM_EMAIL: ${{ secrets.FROM_EMAIL }}
           TO_EMAIL: ${{ secrets.TO_EMAIL }}
 
-      # Optional: upload the generated zip if you still want an artifact (uncomment if desired)
-      # - name: Upload zip artifact
-      #   uses: actions/upload-artifact@v4
-      #   with:
-      #     name: vi-daily-reports
-      #     path: VI_Daily_Reports_*.zip
+      - name: Show tmp dir & zip details (debug)
+        run: |
+          echo "Listing workspace:"
+          ls -la
 
-      # Optional helper: print/echo the local path you uploaded earlier (for reference)
+          # Find the generated zip (pattern from your script)
+          echo "Zips found:"
+          ls -la VI_Daily_Reports_*.zip || true
+
+          for z in VI_Daily_Reports_*.zip; do
+            echo "---- unzip -l $z ----"
+            unzip -l "$z" || true
+            echo "---- END $z ----"
+          done
+        shell: bash
+
+      - name: Upload zip artifact (so you can download & inspect)
+        uses: actions/upload-artifact@v4
+        with:
+          name: vi-daily-reports
+          path: VI_Daily_Reports_*.zip
+          # if-no-files-found defaults to 'warn' — fine for debugging
+
       - name: Print uploaded log path (from your machine)
         run: |
           echo "User-uploaded log path (reference): /mnt/data/metabase_export.log"
@@ -95,11 +105,3 @@ PY
           else
             echo "The path /mnt/data/metabase_export.log is not present on this runner."
           fi
-
-      # If you *do* want to upload that local file from the runner as an artifact (only works if present),
-      # uncomment the step below.
-      # - name: Upload existing log artifact
-      #   uses: actions/upload-artifact@v4
-      #   with:
-      #     name: metabase-export-log
-      #     path: /mnt/data/metabase_export.log
