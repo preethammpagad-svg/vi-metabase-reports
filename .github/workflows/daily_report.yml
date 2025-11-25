@@ -3,8 +3,12 @@ name: VI Daily Reports
 # 08:00 IST = 02:30 UTC
 on:
   schedule:
-    - cron: "30 2 * * *"
+    - cron: "30 2 * * *"   # runs daily at 02:30 UTC -> 08:00 IST
   workflow_dispatch: {}
+
+concurrency:
+  group: vi-daily-reports
+  cancel-in-progress: true
 
 jobs:
   run-report:
@@ -22,25 +26,80 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
+      - name: Show runner times (verify schedule)
+        run: |
+          echo "=== Runner time (local) ==="
+          date
+          echo "=== UTC time ==="
+          date -u
+          echo "=== IST time (calculated) ==="
+          # Print IST using python for portability
+          python - <<'PY'
+import datetime, pytz, os
+utc = datetime.datetime.now(datetime.timezone.utc)
+ist = utc.astimezone(datetime.timezone(datetime.timedelta(hours=5, minutes=30)))
+print("UTC:", utc.strftime("%Y-%m-%d %H:%M:%S %Z"))
+print("IST:", ist.strftime("%Y-%m-%d %H:%M:%S %Z"))
+PY
+        # Note: the pytz module is not required; using stdlib timezone arithmetic above.
+        # If the above python snippet errors due to missing tzinfo support on older python versions,
+        # the shell fallback below will still print date/time:
+        shell: bash
+
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.13'
 
       - name: Install dependencies
-        run: python -m pip install --upgrade pip && pip install requests
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests
 
-      - name: Debug
+      - name: Debug python environment
         run: |
           python -V
           which python
           python -c "import requests; print('requests', requests.__version__)"
+          echo "Working directory: $(pwd)"
+      
+      - name: Run metabase export script (unbuffered logs)
+        # Use -u so that Python prints logs immediately to the Actions log
+        run: python -u metabase_daily_export_and_email.py
+        env:
+          # re-export secrets so script can access them (already set at job env, this is optional)
+          METABASE_SITE: ${{ secrets.METABASE_SITE }}
+          METABASE_API_KEY: ${{ secrets.METABASE_API_KEY }}
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASS: ${{ secrets.SMTP_PASS }}
+          FROM_EMAIL: ${{ secrets.FROM_EMAIL }}
+          TO_EMAIL: ${{ secrets.TO_EMAIL }}
 
-      - name: Run metabase export script
-        run: python metabase_daily_export_and_email.py
+      # Optional: upload the generated zip if you still want an artifact (uncomment if desired)
+      # - name: Upload zip artifact
+      #   uses: actions/upload-artifact@v4
+      #   with:
+      #     name: vi-daily-reports
+      #     path: VI_Daily_Reports_*.zip
 
-      - name: Upload zip artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: vi-daily-reports
-          path: VI_Daily_Reports_*.zip
+      # Optional helper: print/echo the local path you uploaded earlier (for reference)
+      - name: Print uploaded log path (from your machine)
+        run: |
+          echo "User-uploaded log path (reference): /mnt/data/metabase_export.log"
+          if [ -f /mnt/data/metabase_export.log ]; then
+            echo "--- START metabase_export.log ---"
+            sed -n '1,200p' /mnt/data/metabase_export.log || true
+            echo "--- END metabase_export.log ---"
+          else
+            echo "The path /mnt/data/metabase_export.log is not present on this runner."
+          fi
+
+      # If you *do* want to upload that local file from the runner as an artifact (only works if present),
+      # uncomment the step below.
+      # - name: Upload existing log artifact
+      #   uses: actions/upload-artifact@v4
+      #   with:
+      #     name: metabase-export-log
+      #     path: /mnt/data/metabase_export.log
