@@ -3,12 +3,8 @@ name: VI Daily Reports
 # 08:00 IST = 02:30 UTC
 on:
   schedule:
-    - cron: "30 2 * * *"   # runs daily at 02:30 UTC -> 08:00 IST
+    - cron: "30 2 * * *"
   workflow_dispatch: {}
-
-concurrency:
-  group: vi-daily-reports
-  cancel-in-progress: true
 
 jobs:
   run-report:
@@ -26,82 +22,25 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Show runner times (verify schedule)
-        run: |
-          echo "=== Runner local time ==="
-          date
-          echo "=== UTC time ==="
-          date -u
-          echo "=== IST time (calculated) ==="
-          python - <<'PY'
-from datetime import datetime, timezone, timedelta
-utc = datetime.now(timezone.utc)
-ist = utc.astimezone(timezone(timedelta(hours=5, minutes=30)))
-print("UTC:", utc.strftime("%Y-%m-%d %H:%M:%S %Z"))
-print("IST:", ist.strftime("%Y-%m-%d %H:%M:%S %Z"))
-PY
-        shell: bash
-
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.13'
 
       - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install requests
+        run: python -m pip install --upgrade pip && pip install requests
 
-      - name: Debug python environment
+      - name: Debug
         run: |
           python -V
           which python
           python -c "import requests; print('requests', requests.__version__)"
-          echo "Working directory: $(pwd)"
 
-      - name: Run metabase export script (unbuffered logs)
-        run: |
-          python -u metabase_daily_export_and_email.py
-        env:
-          METABASE_SITE: ${{ secrets.METABASE_SITE }}
-          METABASE_API_KEY: ${{ secrets.METABASE_API_KEY }}
-          SMTP_HOST: ${{ secrets.SMTP_HOST }}
-          SMTP_PORT: ${{ secrets.SMTP_PORT }}
-          SMTP_USER: ${{ secrets.SMTP_USER }}
-          SMTP_PASS: ${{ secrets.SMTP_PASS }}
-          FROM_EMAIL: ${{ secrets.FROM_EMAIL }}
-          TO_EMAIL: ${{ secrets.TO_EMAIL }}
+      - name: Run metabase export script
+        run: python metabase_daily_export_and_email.py
 
-      - name: Show tmp dir & zip details (debug)
-        run: |
-          echo "Listing workspace:"
-          ls -la
-
-          # Find the generated zip (pattern from your script)
-          echo "Zips found:"
-          ls -la VI_Daily_Reports_*.zip || true
-
-          for z in VI_Daily_Reports_*.zip; do
-            echo "---- unzip -l $z ----"
-            unzip -l "$z" || true
-            echo "---- END $z ----"
-          done
-        shell: bash
-
-      - name: Upload zip artifact (so you can download & inspect)
+      - name: Upload zip artifact
         uses: actions/upload-artifact@v4
         with:
           name: vi-daily-reports
           path: VI_Daily_Reports_*.zip
-          # if-no-files-found defaults to 'warn' — fine for debugging
-
-      - name: Print uploaded log path (from your machine)
-        run: |
-          echo "User-uploaded log path (reference): /mnt/data/metabase_export.log"
-          if [ -f /mnt/data/metabase_export.log ]; then
-            echo "--- START metabase_export.log ---"
-            sed -n '1,200p' /mnt/data/metabase_export.log || true
-            echo "--- END metabase_export.log ---"
-          else
-            echo "The path /mnt/data/metabase_export.log is not present on this runner."
-          fi
