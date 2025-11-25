@@ -8,6 +8,8 @@ import ssl
 from email.message import EmailMessage
 from datetime import datetime
 import re
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 # ---------- Environment ----------
 METABASE_SITE = os.getenv("METABASE_SITE", "https://metabase.skit.ai").rstrip("/")
@@ -53,16 +55,46 @@ def build_params(params_dict):
         })
     return params
 
-def download_card_xlsx(session, card_id, out_path, params=None):
-    """Download card results as XLSX."""
+def _make_retry_session(retries=3, backoff_factor=1, status_forcelist=(500,502,503,504)):
+    s = requests.Session()
+    retry = Retry(
+        total=retries,
+        read=retries,
+        connect=retries,
+        backoff_factor=backoff_factor,
+        status_forcelist=status_forcelist,
+        allowed_methods=frozenset(['GET','POST','PUT','DELETE','HEAD','OPTIONS'])
+    )
+    adapter = HTTPAdapter(max_retries=retry)
+    s.mount("https://", adapter)
+    s.mount("http://", adapter)
+    # ensure x-api-key header preserved if set on outer session
+    return s
+
+def download_card_xlsx(session, card_id, out_path, params=None, read_timeout=300):
+    """
+    Download card results as XLSX using streaming and retries.
+    - session: requests.Session that carries x-api-key header (we'll reuse headers).
+    - out_path: local file path to write.
+    - read_timeout: seconds allowed for read; default 300 (5 minutes).
+    """
     url = f"{METABASE_SITE}/api/card/{card_id}/query/xlsx"
     payload = {}
     if params:
         payload["parameters"] = build_params(params)
-    r = session.post(url, json=payload, verify=VERIFY_SSL, timeout=60)
-    r.raise_for_status()
-    with open(out_path, "wb") as f:
-        f.write(r.content)
+
+    # use a local session that shares headers from the provided session
+    s = _make_retry_session(retries=3, backoff_factor=1)
+    s.headers.update(session.headers)
+
+    # stream the response to avoid timeouts while building content in memory
+    with s.post(url, json=payload, verify=VERIFY_SSL, stream=True, timeout=(10, read_timeout)) as r:
+        r.raise_for_status()
+        # write in chunks
+        with open(out_path, "wb") as f:
+            for chunk in r.iter_content(chunk_size=8192):
+                if chunk:
+                    f.write(chunk)
 
 def make_zip(files, zip_path):
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as z:
