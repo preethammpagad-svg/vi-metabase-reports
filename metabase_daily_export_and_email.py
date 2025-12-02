@@ -55,10 +55,8 @@ def download_card_csv(session, card_id, out_path, params=None):
     payload = {}
     if params:
         payload["parameters"] = build_params(params)
-
     r = session.post(url, json=payload, verify=VERIFY_SSL, timeout=60)
     r.raise_for_status()
-
     with open(out_path, "wb") as f:
         f.write(r.content)
 
@@ -115,6 +113,7 @@ def main():
     csv_paths = []
 
     try:
+        # Download each card
         for cid in CARD_IDS:
             card_name = get_card_name(session, cid)
             clean_name = clean_filename(card_name)
@@ -126,26 +125,24 @@ def main():
             download_card_csv(session, cid, csv_path, params=params)
             csv_paths.append(csv_path)
 
+        # Create zip
         zip_path = os.path.join(
             tmpdir,
             f"VI_Daily_Reports_{datetime.now().strftime('%Y%m%d')}.zip"
         )
         make_zip(csv_paths, zip_path)
 
-        print("Sending email…")
+        print("Sending email...")
         send_email(zip_path)
         print("Email sent!")
 
     finally:
+        # Clean up
         for f in csv_paths:
-            try:
-                os.remove(f)
-            except:
-                pass
-        try:
-            os.remove(zip_path)
-        except:
-            pass
+            try: os.remove(f)
+            except: pass
+        try: os.remove(zip_path)
+        except: pass
 
 if __name__ == "__main__":
     main()
