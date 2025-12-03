@@ -1,9 +1,9 @@
 name: VI Daily Reports
 
-# 04:00 IST = 22:30 UTC
+# 06:00 IST = 00:30 UTC
 on:
   schedule:
-    - cron: "30 22 * * *"     # runs daily at 22:30 UTC → 04:00 IST
+    - cron: "30 0 * * *"   # runs daily at 00:30 UTC -> 06:00 IST
   workflow_dispatch: {}
 
 concurrency:
@@ -24,9 +24,9 @@ jobs:
       SMTP_PASS: ${{ secrets.SMTP_PASS }}
 
       # Email setup
-      FROM_EMAIL: ${{ secrets.FROM_EMAIL }}      # ritik.batham@skit.ai
-      TO_EMAIL: ${{ secrets.TO_EMAIL }}          # comma-separated list
-      CC_EMAIL: ${{ secrets.CC_EMAIL }}          # monalisa
+      FROM_EMAIL: ${{ secrets.FROM_EMAIL }}
+      TO_EMAIL: ${{ secrets.TO_EMAIL }}
+      CC_EMAIL: ${{ secrets.CC_EMAIL }}
 
     steps:
       - name: Checkout repo
